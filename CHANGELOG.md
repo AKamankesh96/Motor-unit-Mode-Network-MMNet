@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v1.1.0)
+## v1.1.0 — 2026-11-10
 
 - Use the posterior mean for deterministic validation, reconstruction, and mode extraction.
 - Add group-balanced reconstruction loss through per-muscle motor-unit counts.
