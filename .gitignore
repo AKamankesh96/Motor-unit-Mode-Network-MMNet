@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local MMNet data, model checkpoints, and generated analyses
+*.mat
+*.npy
+*.npz
+*.h5
+*.weights.h5
+outputs*/
+temporal_cv/
+attribution/

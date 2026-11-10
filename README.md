@@ -1,71 +1,152 @@
-# Motor Unit Mode Network (MMNet)
+# Motor-unit Mode Network (MMNet)
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18895984.svg)](https://doi.org/10.5281/zenodo.18895984)
 
-This repository provides an implementation of the **Motor-unit Mode Network (MMNet)** for extracting low-dimensional motor-unit modes from motor-unit discharge-rate signals.
+MMNet is a variational autoencoder framework for extracting low-dimensional
+motor-unit modes from smoothed motor-unit discharge rates. It combines a
+convolutional encoder, recurrent temporal modeling, individualized mode
+selection, and gradient-based attribution.
 
-MMNet models coordinated activity across multiple motor units using a variational autoencoder architecture to identify latent patterns of neural drive underlying muscle activation.
+## Repository contents
 
----
+- `scripts/mmnet.py`: MMNet-VAE training, deterministic reconstruction, and mode extraction
+- `scripts/temporal_cv.py`: five-fold blocked temporal cross-validation
+- `scripts/mode_selection.py`: individualized elbow selection by majority vote
+- `scripts/integrated_gradients.py`: motor-unit and muscle attribution
+- `scripts/force_coupling.py`: force–mode mutual-information analysis
+- `notebooks/mmnet_demo.ipynb`: minimal training demonstration
 
-## Repository Contents
+The repository contains analysis code, not participant data. Do not commit raw
+EMG, motor-unit, force, or participant-identifying files.
 
-- `mmnet.py` – main script for training the MMNet model
-- `mmnet_demo.ipynb` – simple notebook demonstrating how to run the model and inspect latent modes
+## Installation
 
----
+Python 3.10 or 3.11 is recommended.
 
-## Input Data
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-MMNet operates on **motor unit discharge-rate signals** obtained from high-density surface EMG (HD-sEMG).
+## Input data
 
-Typical preprocessing pipeline:
+The training scripts expect a MATLAB file containing a two-dimensional matrix
+named `concatenated_data` by default. Its shape must be `[motor units, samples]`,
+with motor units from each muscle stored contiguously. The signals should be
+continuous, smoothed discharge rates sampled at 2000 Hz.
 
-1. Record **HD-sEMG signals**
-2. Decompose EMG signals to obtain **motor unit spike trains**
-3. Convert spike trains into **continuous discharge-rate signals** using smoothing
-4. Provide the discharge-rate signals as input to MMNet
+## Train MMNet-VAE
 
-The model expects a MATLAB `.mat` file containing a matrix of motor unit
-discharge-rate signals (default variable name: `concatenated_data`) with shape: [n_mus, n_samples]
-
-where:
-
-- `n_mus` = number of motor units  
-- `n_samples` = number of time samples  
-
-Each row corresponds to one motor unit discharge-rate signal.
-
----
-
-## Example Command
+The muscle counts enable the group-balanced reconstruction loss used in the
+study. The best checkpoint is selected by validation reconstruction loss.
+Reported reconstructions and modes use the posterior mean rather than a random
+latent sample.
 
 ```bash
 python scripts/mmnet.py \
---mat_path All_MUs_S01s35bef.mat \
---latent_dim 4 \
---out_dir outputs_S01 \
---save_full_recon \
---save_full_latent \
---save_config
-
+  --mat_path All_MUs_S01s35bef.mat \
+  --latent_dim 4 \
+  --muscle_counts 10 16 11 \
+  --out_dir outputs_S01 \
+  --save_full_recon \
+  --save_full_latent \
+  --save_config
 ```
+
+## Individualized mode selection
+
+Train dimensions 1–10 and create a CSV with columns `latent_dim` and
+`explained_variance`. Three elbow heuristics vote on the selected dimension; if
+all disagree, Knee Locator is used as specified in the manuscript.
+
+```bash
+python scripts/mode_selection.py reconstruction_curve.csv \
+  --output mode_selection.json
+```
+
+## Blocked temporal cross-validation
+
+The cross-validation implementation uses ten contiguous blocks and five folds.
+Each fold contains 70% training, 10% validation, and 20% test data; every block
+serves as test data once. By default, whole-record standardization reproduces
+the supplied analysis notebook. Use `--normalization training` for a stricter
+training-only sensitivity analysis. In either case, 250 ms is removed from both
+sides of partition boundaries, and all out-of-fold predictions are pooled
+before explained variance is calculated.
+
+```bash
+python scripts/temporal_cv.py \
+  --mat_path All_MUs_S01s35bef.mat \
+  --latent_dim 4 \
+  --muscle_counts 10 16 11 \
+  --out_dir temporal_cv_S01
+```
+
+Use `--start_s` and `--end_s` when cross-validation is restricted to a
+preselected stationary interval. These values are interpreted relative to the
+signal after the standard 0.4-s edge trim.
+
+## Integrated Gradients attribution
+
+```bash
+python scripts/integrated_gradients.py \
+  --mat_path All_MUs_S01s35bef.mat \
+  --weights outputs_S01/best_weights_latent4.weights.h5 \
+  --config outputs_S01/config.json \
+  --muscle_counts 10 16 11 \
+  --out_dir attribution_S01
+```
+
+The script uses a zero baseline, 16 interpolation steps, absolute attribution,
+and the median across overlapping windows. It writes motor-unit attribution and
+normalized muscle-contribution tables.
+
+## Force–mode coupling
+
+```bash
+python scripts/force_coupling.py \
+  --modes outputs_S01/latent_full.npy \
+  --force_mat force_S01.mat \
+  --force_key force_filt \
+  --output force_coupling_S01.json
+```
+
+The default analysis low-pass filters modes and force at 2.5 Hz, downsamples to
+50 Hz, estimates mutual information with seven nearest neighbors across lags
+from −150 to +150 ms, and evaluates the peak with 1000 circular-shift surrogates.
+
+## Reproducibility notes
+
+- The random seed is 42 by default.
+- Full-signal fitting and blocked temporal cross-validation answer different
+  questions and should be reported separately.
+- Fold-specific explained-variance values are diagnostics. The temporal-CV
+  result is the value calculated from pooled out-of-fold predictions.
+- Generated data, weights, and analysis outputs are excluded by `.gitignore`.
 
 ## Citation
 
-If you use MMNet in your research, please cite:
+If you use the archived v1.0.1 release, cite:
 
-Kamankesh, A. (2026).  
-**Motor-Unit Mode Network (MMNet)**.  
-Zenodo. https://doi.org/10.5281/zenodo.18895984
-
-BibTeX:
+> Kamankesh, A. (2026). *Motor-unit Mode Network (MMNet)* (v1.0.1) [Software].
+> Zenodo. https://doi.org/10.5281/zenodo.18895984
 
 ```bibtex
 @software{kamankesh_mmnet_2026,
   author  = {Kamankesh, Alireza},
-  title   = {Motor-Unit Mode Network (MMNet)},
+  title   = {Motor-unit Mode Network (MMNet)},
   year    = {2026},
+  version = {v1.0.1},
   doi     = {10.5281/zenodo.18895984},
-  url     = {https://github.com/AKamankesh96/Motor-Unit-Network---MMNet}
+  url     = {https://github.com/AKamankesh96/Motor-unit-Mode-Network-MMNet}
 }
+```
+
+See `CITATION.cff` for machine-readable citation metadata. When the updated
+code is released on Zenodo, cite the DOI assigned to that version.
+
+## License
+
+This project is released under the MIT License.

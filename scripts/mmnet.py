@@ -25,7 +25,7 @@ import os
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Sequence, Tuple
 import numpy as np
 import scipy.io
 import tensorflow as tf
@@ -128,9 +128,20 @@ def make_overlapping_windows(data_TxM: np.ndarray, window: int, step: int) -> np
     if T < window:
         raise ValueError(f"Signal too short for requested window size: T={T}, window={window}")
 
-    starts = range(0, T - window + 1, step)
+    starts = window_starts(T, window, step)
     windows = np.stack([data_TxM[s:s + window] for s in starts], axis=0)
     return windows.astype(np.float32)
+
+
+def window_starts(length: int, window: int, step: int) -> list[int]:
+    """Return window starts while ensuring the final sample is covered."""
+    if length < window:
+        raise ValueError(f"Signal too short for requested window size: T={length}, window={window}")
+    starts = list(range(0, length - window + 1, step))
+    final_start = length - window
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
 
 
 def train_val_split(windows: np.ndarray, val_frac: float, seed: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -268,6 +279,18 @@ class SequenceLatentVAE(tf.keras.Model):
         recon = self.decoder(z_up, training=training)
         return mean, logvar, z, recon
 
+    def deterministic(self, x: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Encode and reconstruct ``x`` using the posterior mean.
+
+        Sampling from the posterior is retained during training, but reported
+        reconstructions and latent modes should be deterministic.
+        """
+        h = self.encoder(x, training=False)
+        mean = self.to_mean(h)
+        logvar = self.to_logvar(h)
+        recon = self.decoder(self.expand(mean, training=False), training=False)
+        return mean, logvar, recon
+
 # ---------------------------- Loss + training ----------------------------
 
 def balanced_recon_mse(
@@ -334,7 +357,7 @@ def val_step(
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """One validation step."""
     x = tf.cast(x, tf.float32)
-    mean, logvar, _, recon = model(x, training=False)
+    mean, logvar, recon = model.deterministic(x)
     recon_loss = balanced_recon_mse(x, recon, mu_groups)
     kl = kl_divergence(mean, logvar)
     loss = recon_loss + beta_kl * kl
@@ -348,11 +371,14 @@ def fit(
     cfg: Config,
     mu_groups: Optional[Dict[str, Iterable[int]]] = None,
     ckpt_path: Optional[str | Path] = None,
+    early_stopping_patience: Optional[int] = None,
+    min_epochs: int = 0,
 ) -> Dict[str, list]:
     """Train the model with best-validation checkpointing."""
     optimizer = tf.keras.optimizers.Adam(cfg.lr)
     history = {"loss": [], "recon": [], "kl": [], "val_loss": [], "val_recon": [], "val_kl": []}
     best_val = np.inf
+    best_epoch = 0
 
     for epoch in range(1, cfg.epochs + 1):
         tr = [0.0, 0.0, 0.0]
@@ -382,8 +408,9 @@ def fit(
         history["val_recon"].append(va[1])
         history["val_kl"].append(va[2])
 
-        if va[0] < best_val:
-            best_val = va[0]
+        if va[1] < best_val:
+            best_val = va[1]
+            best_epoch = epoch
             if ckpt_path is not None:
                 model.save_weights(str(ckpt_path))
 
@@ -393,6 +420,14 @@ def fit(
                 f"loss={tr[0]:.6f} (recon={tr[1]:.6f}, kl={tr[2]:.6f}) | "
                 f"val={va[0]:.6f} (recon={va[1]:.6f}, kl={va[2]:.6f})"
             )
+
+        if (
+            early_stopping_patience is not None
+            and epoch >= min_epochs
+            and epoch - best_epoch >= early_stopping_patience
+        ):
+            print(f"Early stopping at epoch {epoch}; best validation reconstruction at epoch {best_epoch}.")
+            break
 
     return history
 
@@ -409,9 +444,9 @@ def reconstruct_full_signal(
     recon_accum = np.zeros((T, M), dtype=np.float32)
     weight = np.zeros((T, M), dtype=np.float32)
 
-    for start in range(0, T - window + 1, step):
+    for start in window_starts(T, window, step):
         seg = data_TxM[start:start + window][None, ...].astype(np.float32)
-        _, _, _, recon = model(seg, training=False)
+        _, _, recon = model.deterministic(seg)
         recon = recon.numpy()[0]
         recon_accum[start:start + window] += recon
         weight[start:start + window] += 1.0
@@ -432,9 +467,9 @@ def extract_latent_full(
     latent_accum = np.zeros((T, latent_dim), dtype=np.float32)
     count = np.zeros((T, latent_dim), dtype=np.float32)
 
-    for start in range(0, T - window + 1, step):
+    for start in window_starts(T, window, step):
         seg = data_TxM[start:start + window][None, ...].astype(np.float32)
-        mean, _, _, _ = model(seg, training=False)
+        mean, _, _ = model.deterministic(seg)
         mean = mean.numpy()[0]
         latent_accum[start:start + window] += mean
         count[start:start + window] += 1.0
@@ -443,10 +478,23 @@ def extract_latent_full(
 
 
 def variance_explained_percent(x_true: np.ndarray, x_pred: np.ndarray, eps: float = 1e-8) -> float:
-    """Compute variance explained (%) across all channels and time points."""
-    mse = np.mean((x_true - x_pred) ** 2)
-    var = np.var(x_true)
-    return 100.0 * (1.0 - mse / (var + eps))
+    """Compute pooled variance explained (%) with channel-specific means."""
+    residual = np.sum((x_true - x_pred) ** 2)
+    centered = x_true - np.mean(x_true, axis=0, keepdims=True)
+    total = np.sum(centered**2)
+    return 100.0 * (1.0 - residual / (total + eps))
+
+
+def muscle_groups_from_counts(counts: Sequence[int]) -> Dict[str, range]:
+    """Create contiguous MU index groups from per-muscle MU counts."""
+    if not counts or any(count <= 0 for count in counts):
+        raise ValueError("All muscle counts must be positive integers.")
+    groups: Dict[str, range] = {}
+    start = 0
+    for number, count in enumerate(counts, start=1):
+        groups[f"muscle_{number}"] = range(start, start + count)
+        start += count
+    return groups
 
 
 # ---------------------------- CLI ----------------------------
@@ -461,6 +509,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window", type=int, default=1000, help="Window length in samples")
     parser.add_argument("--step", type=int, default=250, help="Window step in samples")
     parser.add_argument("--beta_kl", type=float, default=0.1, help="KL-divergence weight")
+    parser.add_argument(
+        "--muscle_counts",
+        type=int,
+        nargs="+",
+        help=("Numbers of contiguous motor units from each muscle, for example "
+              "--muscle_counts 10 16 11. Enables group-balanced loss."),
+    )
     parser.add_argument("--out_dir", type=str, default="outputs", help="Output directory")
     parser.add_argument("--save_full_recon", action="store_true", help="Save overlap-added full reconstruction")
     parser.add_argument("--save_full_latent", action="store_true", help="Save overlap-added latent time series")
@@ -495,6 +550,13 @@ def main() -> None:
     train_ds, val_ds = make_tf_datasets(train_x, val_x, batch_size=cfg.batch_size)
 
     n_mus = data_TxM.shape[1]
+    mu_groups = None
+    if args.muscle_counts:
+        if sum(args.muscle_counts) != n_mus:
+            raise ValueError(
+                f"muscle_counts sum to {sum(args.muscle_counts)}, but the input has {n_mus} motor units."
+            )
+        mu_groups = muscle_groups_from_counts(args.muscle_counts)
     model = SequenceLatentVAE(
         n_mus=n_mus,
         window=cfg.window,
@@ -507,7 +569,7 @@ def main() -> None:
     print(f"Loaded data with {n_mus} motor units and {data_TxM.shape[0]} time samples after trimming.")
     print(f"Windowed dataset shape: {windows.shape}")
 
-    history = fit(model, train_ds, val_ds, cfg, mu_groups=None, ckpt_path=ckpt_path)
+    history = fit(model, train_ds, val_ds, cfg, mu_groups=mu_groups, ckpt_path=ckpt_path)
 
     if ckpt_path.exists():
         model.load_weights(str(ckpt_path))
