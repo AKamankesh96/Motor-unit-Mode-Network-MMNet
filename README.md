@@ -1,6 +1,6 @@
 # Motor-unit Mode Network (MMNet)
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18895984.svg)](https://doi.org/10.5281/zenodo.18895984)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18895983.svg)](https://doi.org/10.5281/zenodo.18895983)
 
 MMNet is a variational autoencoder framework for extracting low-dimensional
 motor-unit modes from smoothed motor-unit discharge rates. It combines a
@@ -128,24 +128,24 @@ from −150 to +150 ms, and evaluates the peak with 1000 circular-shift surrogat
 
 ## Citation
 
-If you use the archived v1.0.1 release, cite:
+To cite MMNet v1.1.0, use:
 
-> Kamankesh, A. (2026). *Motor-unit Mode Network (MMNet)* (v1.0.1) [Software].
-> Zenodo. https://doi.org/10.5281/zenodo.18895984
+> Kamankesh, A. (2026). *Motor-unit Mode Network (MMNet)* (v1.1.0) [Software].
+> Zenodo. https://doi.org/10.5281/zenodo.18895983
 
 ```bibtex
 @software{kamankesh_mmnet_2026,
   author  = {Kamankesh, Alireza},
   title   = {Motor-unit Mode Network (MMNet)},
   year    = {2026},
-  version = {v1.0.1},
-  doi     = {10.5281/zenodo.18895984},
+  version = {v1.1.0},
+  doi     = {10.5281/zenodo.18895983},
   url     = {https://github.com/AKamankesh96/Motor-unit-Mode-Network-MMNet}
 }
 ```
 
-See `CITATION.cff` for machine-readable citation metadata. When the updated
-code is released on Zenodo, cite the DOI assigned to that version.
+See `CITATION.cff` for machine-readable citation metadata. The DOI above
+resolves to the latest archived version of MMNet.
 
 ## License
 
